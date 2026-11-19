@@ -1,0 +1,42 @@
+{
+  "name": "ds-audio-gestao",
+  "version": "1.0.0",
+  "description": "App  de Controle da DS Audio",
+  "main": "index.js",
+  "scripts": {
+    "test": "tsx --test tests/*.test.ts",
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "build:hosting": "tsc --noEmit && vite build --mode hosting"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ocadeirantemito-bit/DS-Audio.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/ocadeirantemito-bit/DS-Audio/issues"
+  },
+  "homepage": "https://github.com/ocadeirantemito-bit/DS-Audio#readme",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.119.2",
+    "lucide-react": "^1.76.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.17",
+    "@tailwindcss/vite": "^4.3.5",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "tailwindcss": "^4.3.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
+  }
+}
