@@ -6,23 +6,51 @@ import { Amount, Field, Modal, MoneyField, options, Qty, Rows, Select } from './
 type StageName = typeof stages[number]
 const icons = { Caixaria: Hammer, Pintura: PaintRoller, Ferragem: Wrench, Instalação: Layers3 }
 const units = ['folha', 'metro', 'litro', 'unidade', 'quilograma', 'outra']
-type Props = { data: Data; order: Order; change: (order: Order) => void; open: (order?: Order) => void; persist: (order: Order, notice?: string) => Promise<void>; showError: (error: unknown) => void; staffSave: (staff: Staff[]) => Promise<void>; busy: boolean }
-export function OrderPage({ data, order, change, open, persist, showError, staffSave, busy }: Props) {
+type Props = { data: Data; order: Order; baseline: Order; change: (order: Order) => void; open: (order?: Order) => void; persist: (order: Order, notice?: string, stageName?: StageName) => Promise<void>; showError: (error: unknown) => void; staffSave: (staff: Staff[]) => Promise<void>; busy: boolean }
+export function OrderPage({ data, order, baseline, change, open, persist, showError, staffSave, busy }: Props) {
   const [modal, setModal] = useState<'search' | 'debt' | 'payment' | 'staff' | 'return' | 'audit' | null>(null)
   const [editing, setEditing] = useState<Payment>()
   const [query, setQuery] = useState('')
+  const [savingStages, setSavingStages] = useState<StageName[]>([])
+  const [stageErrors, setStageErrors] = useState<Partial<Record<StageName, string>>>({})
   const saved = data.orders.some(o => o.id === order.id)
   const total = orderTotals(order)
   const status = paymentStatus(order)
   const done = order.status === 'Finalizada' || order.status === 'Entregue'
   const patch = (values: Partial<Order>) => change({ ...order, ...values })
-  const updateStage = (name: StageName, stage: Stage) => patch({ stages: { ...order.stages, [name]: stage } })
+  const stageDirty = (name: StageName) => JSON.stringify(order.stages[name]) !== JSON.stringify(baseline.stages[name])
+  const updateStage = (name: StageName, stage: Stage) => {
+    setStageErrors(errors => ({ ...errors, [name]: undefined }))
+    patch({ stages: { ...order.stages, [name]: stage } })
+  }
+  const saveOrder = async (candidate: Order, notice?: string, name?: StageName) => {
+    const affected = name ? [name] : stages.filter(stageDirty)
+    setSavingStages(affected)
+    try {
+      await persist(candidate, notice, name)
+      setStageErrors(errors => {
+        const next = { ...errors }
+        for (const stage of affected) delete next[stage]
+        return next
+      })
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'Tente novamente.'
+      setStageErrors(errors => ({ ...errors, ...Object.fromEntries(affected.map(stage => [stage, detail])) }))
+      throw error
+    } finally {
+      setSavingStages([])
+    }
+  }
   const audit = (message: string, previous: unknown) => saved ? [...order.audit, { date: new Date().toISOString(), note: message, previous }] : order.audit
   const catalog = [...data.orders.flatMap(o => [...Object.values(o.stages).flatMap(s => s.materials), ...o.products]), ...Object.values(order.stages).flatMap(s => s.materials), ...order.products]
-  const stageCard = (name: StageName) => <StageCard key={name} name={name} stage={order.stages[name]} staff={data.staff} update={(stage, removed) => {
-    if (removed) patch({ stages: { ...order.stages, [name]: stage }, audit: audit('Material removido de ' + name, removed) })
-    else updateStage(name, stage)
-  }} catalog={catalog} staffDialog={() => setModal('staff')} savePayment={stage => persist({ ...order, stages: { ...order.stages, [name]: stage } }, 'Pagamento do funcionário salvo.')} busy={busy} initialOpen={name === 'Caixaria' || name === 'Instalação'} />
+  const saveStage = (name: StageName, stage: Stage, notice: string) =>
+    saveOrder({ ...order, stages: { ...order.stages, [name]: stage } }, notice, name)
+  const stageCard = (name: StageName) => <StageCard key={name} name={name} stage={order.stages[name]} staff={data.staff}
+    update={stage => updateStage(name, stage)} catalog={catalog} staffDialog={() => setModal('staff')}
+    onSave={() => void saveStage(name, order.stages[name], 'Etapa salva.').catch(showError)}
+    savePayment={stage => saveStage(name, stage, 'Pagamento do funcionário salvo.')}
+    dirty={stageDirty(name)} saving={savingStages.includes(name)} error={stageErrors[name]}
+    saved={saved} busy={busy} initialOpen={name === 'Caixaria' || name === 'Instalação'} />
   const showSearch = () => { setQuery(''); setModal('search') }
   const contains = (o: Order) => {
     const q = query.trim().toLocaleLowerCase('pt-BR')
@@ -30,7 +58,7 @@ export function OrderPage({ data, order, change, open, persist, showError, staff
     return !q || code(o.number).includes(q) || o.customer.toLocaleLowerCase('pt-BR').includes(q) || (!!digits && /^[\d()+.\s-]+$/.test(q) && o.phone.replace(/\D/g, '').includes(digits))
   }
   const editProduct = (product: Product) => patch({ products: order.products.map(p => p.id === product.id ? product : p) })
-  return <>
+  return <fieldset className="order-editor" disabled={busy}>
     <div className="page-heading"><div><h1>Encomendas e Produção</h1><p>Gerencie serviços, materiais e pagamentos em um só lugar.</p></div><div className="actions no-print"><button className="button secondary" onClick={showSearch}><Search size={17} /> Buscar caixa</button><button className="button primary" onClick={() => open()}><Plus size={19} /> Nova caixa</button></div></div>
     <div className="overview">
       <div className="metric"><span className="metric-icon ruby"><ClipboardList size={20}/></span><div><small>Encomenda atual</small><strong>{code(order.number)}</strong></div></div>
@@ -111,7 +139,7 @@ export function OrderPage({ data, order, change, open, persist, showError, staff
       </div>
     </section>
     <div className="bottom-actions no-print">
-      <button className="button secondary" onClick={() => open()}><Plus size={17}/> Nova caixa</button><button className="button secondary" onClick={showSearch}><Search size={17}/> Buscar caixa</button><button className="button secondary" onClick={() => window.print()}><Printer size={17}/> Imprimir / PDF</button><button className="button subtle" onClick={() => open()}><RotateCcw size={16}/> Limpar</button><button className="button primary" disabled={busy} onClick={() => void persist(order).catch(showError)}><Save size={17}/> Salvar caixa</button>
+      <button className="button secondary" onClick={() => open()}><Plus size={17}/> Nova caixa</button><button className="button secondary" onClick={showSearch}><Search size={17}/> Buscar caixa</button><button className="button secondary" onClick={() => window.print()}><Printer size={17}/> Imprimir / PDF</button><button className="button subtle" onClick={() => open()}><RotateCcw size={16}/> Limpar</button><button className="button primary" disabled={busy} onClick={() => void saveOrder(order).catch(showError)}><Save size={17}/> {saved ? 'Salvar Alterações' : 'Salvar Encomenda'}</button>
     </div>
     <datalist id="material-catalog">{[...new Set(catalog.map(m => m.name).filter(Boolean))].map(name => <option key={name} value={name}/>)}</datalist>
 
@@ -120,31 +148,36 @@ export function OrderPage({ data, order, change, open, persist, showError, staff
         {data.orders.filter(o => modal === 'search' ? contains(o) : orderTotals(o).balance > 0).map(o => <button className="list-button" key={o.id} onClick={() => { open(o); setModal(null) }}><div><strong>{code(o.number)} · {o.customer}</strong><small>{o.phone || 'Sem telefone'} · {o.status}</small></div>{modal === 'debt' && <div><strong>{money(orderTotals(o).balance)}</strong><small>{formatDate(o.due)}</small></div>}</button>)}
         {!data.orders.some(o => modal === 'search' ? contains(o) : orderTotals(o).balance > 0) && <p className="muted">Nenhuma encomenda encontrada.</p>}</div>
     </Modal>}
-    {modal === 'payment' && <PaymentDialog order={order} initial={editing} close={() => setModal(null)} busy={busy} apply={async o => { await persist(o, 'Pagamento salvo.'); setModal(null) }}/>}
-    {modal === 'return' && <ReturnDialog order={order} close={() => setModal(null)} busy={busy} apply={async o => { await persist(o, 'Devolução salva.'); setModal(null) }}/>}
+    {modal === 'payment' && <PaymentDialog order={order} initial={editing} close={() => setModal(null)} busy={busy} apply={async o => { await saveOrder(o, 'Pagamento salvo.'); setModal(null) }}/>}
+    {modal === 'return' && <ReturnDialog order={order} close={() => setModal(null)} busy={busy} apply={async o => { await saveOrder(o, 'Devolução salva.'); setModal(null) }}/>}
     {modal === 'staff' && <StaffDialog staff={data.staff} close={() => setModal(null)} save={staffSave} busy={busy}/>}
     {modal === 'audit' && <Modal title="Histórico de alterações" close={() => setModal(null)}><div className="stack">{order.audit.map((entry, i) => <details className="history" key={i}><summary>{entry.note} · {new Date(entry.date).toLocaleString('pt-BR')}</summary><pre>{JSON.stringify(entry.previous, null, 2)}</pre></details>)}</div></Modal>}
-  </>
+  </fieldset>
 }
 
-function StageCard({ name, stage, staff, update, catalog, staffDialog, savePayment, busy, initialOpen }: {
-  name: StageName; stage: Stage; staff: Staff[]; update: (stage: Stage, removed?: Material) => void; catalog: (Material | Product)[]; staffDialog: () => void; savePayment: (stage: Stage) => Promise<void>; busy: boolean; initialOpen: boolean
+function StageCard({ name, stage, staff, update, catalog, staffDialog, onSave, savePayment, dirty, saving, error, saved, busy, initialOpen }: {
+  name: StageName; stage: Stage; staff: Staff[]; update: (stage: Stage) => void; catalog: (Material | Product)[]; staffDialog: () => void; onSave: () => void; savePayment: (stage: Stage) => Promise<void>; dirty: boolean; saving: boolean; error?: string; saved: boolean; busy: boolean; initialOpen: boolean
 }) {
   const [expanded, setExpanded] = useState(initialOpen)
   const [laborDialog, setLaborDialog] = useState(false)
   const totals = stageTotals(stage)
   const Icon = icons[name]
+  const showsCharge = name === 'Caixaria' || name === 'Instalação'
+  const saveStatus = saving ? 'Salvando…' : error ? 'Erro ao salvar' : dirty ? 'Alterações pendentes' : saved ? 'Etapa salva' : ''
   const editMaterial = (m: Material) => update({ ...stage, materials: stage.materials.map(x => x.id === m.id ? m : x) })
   return <div className="stage">
     <button className="stage-toggle" onClick={() => setExpanded(!expanded)} aria-expanded={expanded}><span className="stage-icon"><Icon size={17}/></span><strong>{name}</strong><span className="stage-profit"><Amount value={totals.profit}/></span><ChevronDown size={17} className={expanded ? 'turned' : ''}/></button>
+    <div className="stage-status no-print" role="status">
+      {saveStatus && <span className={'badge ' + (saving ? 'neutral' : error ? 'red' : dirty ? 'amber' : 'green')}>{saveStatus}</span>}
+    </div>
     {expanded && <div className="stage-body stack">
-      <div className="stage-fields">
+      <div className={showsCharge ? "stage-fields" : "stage-fields stage-fields-costs"}>
         <Select label="Funcionário responsável" value={stage.staffId} options={[{ value: '', label: 'Selecionar funcionário' }, ...staff.filter(s => s.active || s.id === stage.staffId).map(s => ({ value: s.id, label: s.name + (s.active ? '' : ' (inativo)') }))]} change={staffId => {
           if (stage.payments.length) { alert('Esta etapa tem pagamentos vinculados ao funcionário.'); return }
           update({ ...stage, staffId })
         }}/>
-        <MoneyField label="Valor cobrado" value={stage.charge} change={charge => update({ ...stage, charge })}/>
-        <MoneyField label="Mão de obra" value={stage.labor} change={labor => update({ ...stage, labor })}/>
+        {showsCharge && <MoneyField label="Valor cobrado" value={stage.charge} change={charge => update({ ...stage, charge })}/>}
+        <MoneyField label="Valor combinado com o funcionário" value={stage.labor} change={labor => update({ ...stage, labor })}/>
       </div>
       {!staff.length && <button className="button subtle align-start no-print" onClick={staffDialog}><Plus size={16}/> Cadastrar funcionário</button>}
       <div className="inline-head"><h3>Materiais utilizados</h3><button className="button subtle no-print" onClick={() => update({ ...stage, materials: [...stage.materials, { id: id(), name: '', cost: 0, qty: 1, unit: 'unidade' }] })}><Plus size={16}/> Adicionar material</button></div>
@@ -155,11 +188,13 @@ function StageCard({ name, stage, staff, update, catalog, staffDialog, savePayme
           editMaterial({ ...m, name, ...(match ? { cost: match.cost, unit: 'unit' in match ? match.unit : m.unit } : {}) })
         }}/><Qty value={m.qty} change={qty => editMaterial({ ...m, qty })}/><Select label="Unidade" value={m.unit} options={options(units)} change={unit => editMaterial({ ...m, unit })}/>
         <MoneyField label="Custo unitário" value={m.cost} change={cost => editMaterial({ ...m, cost })}/><div className="line-result"><small>Subtotal</small><strong>{money(lineTotal(m.qty, m.cost))}</strong></div>
-        <button className="icon-button no-print" aria-label={'Remover ' + (m.name || 'material')} onClick={() => { if (confirm('Remover este material?')) update({ ...stage, materials: stage.materials.filter(x => x.id !== m.id) }, m) }}><Trash2 size={16}/></button></div>
+        <button className="icon-button no-print" aria-label={'Remover ' + (m.name || 'material')} onClick={() => { if (confirm('Remover este material?')) update({ ...stage, materials: stage.materials.filter(x => x.id !== m.id) }) }}><Trash2 size={16}/></button></div>
         <details className="material-date"><summary>Pagamento da compra</summary><Field label="Compra paga em" value={m.paidOn ?? ''} change={paidOn => editMaterial({ ...m, paidOn })} type="date"/></details>
       </div>)}
       <div className="stage-footer"><span>Custo da etapa <strong>{money(totals.cost)}</strong></span><span>Lucro <strong><Amount value={totals.profit}/></strong></span></div>
       <div className="inline-head compact"><span className="muted">Mão de obra · {money(totals.paid)} pago · {money(totals.owed)} a pagar</span><button className="button subtle no-print" onClick={() => setLaborDialog(true)}>Pagamentos</button></div>
+      {error && !saving && <p className="red compact no-print">{error}</p>}
+      <button className="button secondary align-start no-print" disabled={busy || !dirty} onClick={onSave}><Save size={16}/> Salvar Etapa</button>
     </div>}
     {laborDialog && <LaborDialog stage={stage} close={() => setLaborDialog(false)} busy={busy} apply={entry => savePayment({ ...stage, payments: [...stage.payments, entry] })}/>}
   </div>

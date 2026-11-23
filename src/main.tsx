@@ -81,20 +81,20 @@ function Workspace({ user, theme, setTheme }: { user?: Session['user']; theme: R
   const lock = useRef(false)
   const attempt = useRef<{ signature: string; id: string } | null>(null)
   const orderAttempt = useRef<{ signature: string; date: string } | null>(null)
+  const clean = useRef<Order | undefined>(undefined)
   const initial = useCallback(async () => {
     try {
       const current = await load()
       setSnapshot(current)
       if (supabase) setConnection('connected')
-      setOrder(current.data.orders[0] ?? newOrder(1))
+      clean.current = current.data.orders[0] ?? newOrder(1)
+      setOrder(clean.current)
       setFeedback({ text: '', error: false })
     } catch (error) { setFeedback({ text: message(error), error: true }) }
   }, [])
   useEffect(() => { void initial() }, [initial])
   const baseline = snapshot?.data.orders.find(o => o.id === order?.id)
-  const clean = useRef<Order | undefined>(undefined)
   const dirty = !!order && JSON.stringify(order) !== JSON.stringify(baseline ?? clean.current ?? order)
-  useEffect(() => { if (order && !baseline && clean.current?.id !== order.id) clean.current = order }, [order, baseline])
   useEffect(() => {
     if (!dirty) return
     const guard = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = '' }
@@ -130,24 +130,44 @@ function Workspace({ user, theme, setTheme }: { user?: Session['user']; theme: R
       setBusy(false)
     }
   }
-  const persist = async (candidate: Order, notice = 'Encomenda salva.') => {
-    const saved = { ...candidate, customer: candidate.customer.trim(), description: candidate.description.trim() }
+  const persist = async (candidate: Order, notice = 'Encomenda salva.', stageName?: typeof stages[number]) => {
+    const original = data.orders.find(o => o.id === candidate.id)
+    const base = original ?? clean.current ?? candidate
+    let selected = candidate
+    if (stageName) {
+      selected = {
+        ...(original ?? candidate),
+        stages: { ...base.stages, [stageName]: candidate.stages[stageName] },
+        products: base.products, payments: base.payments, returns: base.returns, audit: base.audit,
+        due: base.due,
+      }
+    }
+    const saved = { ...selected, customer: selected.customer.trim(), description: selected.description.trim() }
     validateOrder(saved)
-    const original = data.orders.find(o => o.id === saved.id)
     if (original) {
-      const signature = JSON.stringify(candidate)
+      const signature = JSON.stringify(selected)
       if (orderAttempt.current?.signature !== signature) orderAttempt.current = { signature, date: new Date().toISOString() }
       for (const name of stages) {
         for (const previous of original.stages[name].materials) {
           const current = saved.stages[name].materials.find(m => m.id === previous.id)
-          if (current && JSON.stringify(current) !== JSON.stringify(previous)) {
-            saved.audit = [...saved.audit, { date: orderAttempt.current.date, note: 'Material corrigido em ' + name, previous }]
-          }
+          if (JSON.stringify(current) === JSON.stringify(previous)) continue
+          const note = current ? 'Material corrigido em ' + name : 'Material removido de ' + name
+          saved.audit = [...saved.audit, { date: orderAttempt.current.date, note, previous }]
         }
       }
     }
     await commit({ ...data, orders: [saved, ...data.orders.filter(o => o.id !== saved.id)] }, notice)
-    setOrder(current => current === order ? saved : current)
+    setOrder(current => {
+      if (current !== order) return current
+      if (!stageName) return saved
+      return {
+        ...candidate,
+        customer: original ? candidate.customer : saved.customer,
+        description: original ? candidate.description : saved.description,
+        stages: { ...candidate.stages, [stageName]: saved.stages[stageName] },
+        audit: [...saved.audit, ...candidate.audit.slice(base.audit.length)],
+      }
+    })
   }
   const showError = (error: unknown) => setFeedback({ text: message(error), error: true })
   const navigate = (target: typeof page) => {
@@ -191,7 +211,7 @@ function Workspace({ user, theme, setTheme }: { user?: Session['user']; theme: R
         </div>
       </header>
       <main className="page">
-        {page === 'orders' ? <OrderPage key={order.id} data={data} order={order} change={setOrder} open={open} persist={persist} showError={showError} busy={busy} staffSave={staff => commit({ ...data, staff }, 'Funcionários salvos.')}/> : <Finance data={data} busy={busy} persist={expenses => commit({ ...data, expenses }, 'Despesa salva.')}/>}
+        {page === 'orders' ? <OrderPage key={order.id} data={data} order={order} baseline={baseline ?? clean.current ?? order} change={setOrder} open={open} persist={persist} showError={showError} busy={busy} staffSave={staff => commit({ ...data, staff }, 'Funcionários salvos.')}/> : <Finance data={data} busy={busy} persist={expenses => commit({ ...data, expenses }, 'Despesa salva.')}/>}
       </main>
     </div>
     {panel === 'settings' && <SettingsPanel theme={theme} setTheme={setTheme} email={user?.email} real={!!supabase}
